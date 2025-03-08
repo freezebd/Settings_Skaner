@@ -24,7 +24,7 @@
 - Включенный Wi-Fi
 
 ## Установка
-1. Скачайте последнюю версию APK из [релизов](https://github.com/YOUR_USERNAME/settingd/releases)
+1. Скачайте последнюю версию APK из [релизов](https://github.com/freezebd/Settings_Skaner/releases/download/v1.0.0/Settings-Discover-v1.0.0.apk)
 2. Разрешите установку из неизвестных источников
 3. Установите APK файл
 
