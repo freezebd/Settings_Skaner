@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
@@ -12,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.settingd.data.NetworkScannerNew.Device
 import androidx.compose.material.DismissDirection
@@ -33,6 +35,8 @@ fun MainScreen(
     val devices by viewModel.devices.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
     val progress by viewModel.scanProgress.collectAsState()
+    val showIpDialog by viewModel.showIpDialog.collectAsState()
+    val isCheckingIp by viewModel.isCheckingIp.collectAsState()
 
     Scaffold(
         topBar = {
@@ -42,9 +46,11 @@ fun MainScreen(
                     Text(
                         text = viewModel.getLocalIpAddress(),
                         style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(end = 16.dp)
+                        modifier = Modifier
+                            .padding(end = 16.dp)
+                            .clickable { viewModel.showIpInputDialog() }
                     )
-                    if (isScanning) {
+                    if (isScanning || isCheckingIp) {
                         CircularProgressIndicator(
                             modifier = Modifier
                                 .size(24.dp)
@@ -66,86 +72,95 @@ fun MainScreen(
             )
         }
     ) { paddingValues ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (isScanning) {
-                item {
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 8.dp)
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (isScanning) {
+                    item {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp)
+                        )
+                    }
+                }
+
+                items(
+                    items = devices,
+                    key = { device -> device.mac }
+                ) { device ->
+                    var isDeleting by remember { mutableStateOf(false) }
+                    val dismissState = rememberDismissState(
+                        confirmStateChange = { dismissValue ->
+                            when (dismissValue) {
+                                DismissValue.DismissedToStart -> {
+                                    isDeleting = true
+                                    viewModel.removeDevice(device)
+                                    true
+                                }
+                                DismissValue.Default -> {
+                                    isDeleting = false
+                                    true
+                                }
+                                else -> false
+                            }
+                        }
                     )
+
+                    if (!isDeleting) {
+                        SwipeToDismiss(
+                            state = dismissState,
+                            background = {
+                                val scale by animateFloatAsState(
+                                    if (dismissState.targetValue == DismissValue.Default) 0.75f else 1f,
+                                    label = "scale"
+                                )
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(MaterialTheme.shapes.medium)
+                                        .background(MaterialTheme.colorScheme.error)
+                                        .padding(horizontal = 20.dp),
+                                    contentAlignment = Alignment.CenterEnd
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Delete",
+                                        modifier = Modifier.scale(scale),
+                                        tint = MaterialTheme.colorScheme.onError
+                                    )
+                                }
+                            },
+                            dismissContent = {
+                                DeviceCard(
+                                    device = device,
+                                    onClick = { 
+                                        if (device.isOnline) {
+                                            onDeviceClick(device)
+                                        }
+                                    }
+                                )
+                            },
+                            directions = setOf(DismissDirection.EndToStart)
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
 
-            items(
-                items = devices,
-                key = { device -> device.mac }
-            ) { device ->
-                var isDeleting by remember { mutableStateOf(false) }
-                val dismissState = rememberDismissState(
-                    confirmStateChange = { dismissValue ->
-                        when (dismissValue) {
-                            DismissValue.DismissedToStart -> {
-                                isDeleting = true
-                                viewModel.removeDevice(device)
-                                true
-                            }
-                            DismissValue.Default -> {
-                                isDeleting = false
-                                true
-                            }
-                            else -> false
-                        }
-                    }
+            if (showIpDialog) {
+                IpInputDialog(
+                    onDismiss = { viewModel.hideIpInputDialog() },
+                    onConfirm = { ip -> viewModel.checkDeviceByIp(ip) }
                 )
-
-                if (!isDeleting) {
-                    SwipeToDismiss(
-                        state = dismissState,
-                        background = {
-                            val scale by animateFloatAsState(
-                                if (dismissState.targetValue == DismissValue.Default) 0.75f else 1f,
-                                label = "scale"
-                            )
-
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(MaterialTheme.shapes.medium)
-                                    .background(MaterialTheme.colorScheme.error)
-                                    .padding(horizontal = 20.dp),
-                                contentAlignment = Alignment.CenterEnd
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Delete,
-                                    contentDescription = "Delete",
-                                    modifier = Modifier.scale(scale),
-                                    tint = MaterialTheme.colorScheme.onError
-                                )
-                            }
-                        },
-                        dismissContent = {
-                            DeviceCard(
-                                device = device,
-                                onClick = { 
-                                    if (device.isOnline) {
-                                        onDeviceClick(device)
-                                    }
-                                }
-                            )
-                        },
-                        directions = setOf(DismissDirection.EndToStart)
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(8.dp))
             }
         }
     }
@@ -196,5 +211,72 @@ fun DeviceCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun IpInputDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var ipAddress by remember { mutableStateOf("") }
+    var isError by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Проверить устройство") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = ipAddress,
+                    onValueChange = { 
+                        ipAddress = it
+                        isError = false
+                    },
+                    label = { Text("IP адрес") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    isError = isError,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (isError) {
+                    Text(
+                        text = "Введите корректный IP адрес",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(start = 16.dp, top = 4.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (isValidIpAddress(ipAddress)) {
+                        onConfirm(ipAddress)
+                    } else {
+                        isError = true
+                    }
+                }
+            ) {
+                Text("Проверить")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Отмена")
+            }
+        }
+    )
+}
+
+private fun isValidIpAddress(ip: String): Boolean {
+    return try {
+        val parts = ip.split(".")
+        if (parts.size != 4) return false
+        parts.all { it.toInt() in 0..255 }
+    } catch (e: Exception) {
+        false
     }
 } 

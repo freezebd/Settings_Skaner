@@ -28,6 +28,12 @@ class MainViewModel(private val context: Context) : ViewModel() {
     private val _scanProgress = MutableStateFlow(0f)
     val scanProgress: StateFlow<Float> = _scanProgress.asStateFlow()
 
+    private val _showIpDialog = MutableStateFlow(false)
+    val showIpDialog: StateFlow<Boolean> = _showIpDialog.asStateFlow()
+
+    private val _isCheckingIp = MutableStateFlow(false)
+    val isCheckingIp: StateFlow<Boolean> = _isCheckingIp.asStateFlow()
+
     private var statusCheckJob: Job? = null
     
     init {
@@ -152,5 +158,47 @@ class MainViewModel(private val context: Context) : ViewModel() {
     override fun onCleared() {
         super.onCleared()
         statusCheckJob?.cancel() // Отменяем проверку при уничтожении ViewModel
+    }
+
+    fun showIpInputDialog() {
+        _showIpDialog.value = true
+    }
+
+    fun hideIpInputDialog() {
+        _showIpDialog.value = false
+    }
+
+    fun checkDeviceByIp(ipAddress: String) {
+        if (_isCheckingIp.value) return
+
+        viewModelScope.launch {
+            _isCheckingIp.value = true
+            try {
+                val device = networkScanner.checkSingleDevice(ipAddress)
+                if (device != null) {
+                    // Проверяем, нет ли уже устройства с таким MAC-адресом
+                    val existingDeviceIndex = _devices.value.indexOfFirst { it.mac == device.mac }
+                    val updatedDevices = _devices.value.toMutableList()
+                    
+                    if (existingDeviceIndex != -1) {
+                        // Обновляем существующее устройство
+                        updatedDevices[existingDeviceIndex] = device
+                    } else {
+                        // Добавляем новое устройство
+                        updatedDevices.add(device)
+                    }
+                    
+                    // Сортируем и обновляем список
+                    _devices.value = updatedDevices.sortedWith(
+                        compareBy<NetworkScannerNew.Device> { !it.isOnline }
+                            .thenBy { it.name.lowercase() }
+                    )
+                    saveDevices(_devices.value)
+                }
+            } finally {
+                _isCheckingIp.value = false
+                hideIpInputDialog()
+            }
+        }
     }
 } 

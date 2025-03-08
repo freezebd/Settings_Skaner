@@ -71,7 +71,6 @@ class NetworkScannerNew(private val context: Context) {
 
     suspend fun scanNetwork(onProgress: (Float) -> Unit = {}): List<Device> = coroutineScope {
         val existingDevices = devices.toList()
-        devices.clear()
         scannedCount.set(0)
 
         // Получаем информацию о текущей WiFi сети
@@ -82,64 +81,56 @@ class NetworkScannerNew(private val context: Context) {
         if (network == null || networkCapabilities == null || 
             !networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
             Log.e(TAG, "No WiFi connection available")
-            return@coroutineScope emptyList()
+            // Помечаем все устройства как оффлайн
+            existingDevices.forEach { device ->
+                synchronized(devices) {
+                    val index = devices.indexOfFirst { it.mac == device.mac }
+                    if (index != -1) {
+                        devices[index] = device.copy(isOnline = false)
+                    }
+                }
+            }
+            return@coroutineScope devices.toList()
         }
 
         // Получаем IP-адрес устройства и маску подсети
         val localIpAddress = getLocalIpAddress()
         if (localIpAddress == "Unknown") {
             Log.e(TAG, "Could not get local IP address")
-            return@coroutineScope emptyList()
+            return@coroutineScope devices.toList()
         }
 
         // Разбиваем IP-адрес на октеты
         val ipParts = localIpAddress.split(".")
         if (ipParts.size != 4) {
             Log.e(TAG, "Invalid IP address format")
-            return@coroutineScope emptyList()
+            return@coroutineScope devices.toList()
         }
 
         // Создаем список адресов для сканирования
         val subnet = "${ipParts[0]}.${ipParts[1]}.${ipParts[2]}"
-        
-        // Сначала проверяем существующие устройства
-        val existingAddresses = existingDevices.map { it.ipAddress }
-        val newAddresses = (1..254).map { "$subnet.$it" }.filter { it !in existingAddresses }
+        val addresses = (1..254).map { "$subnet.$it" }
         
         val jobs = mutableListOf<Job>()
 
-        // Проверяем существующие устройства
+        // Сначала помечаем все существующие устройства как оффлайн
         existingDevices.forEach { device ->
-            jobs += launch {
-                try {
-                    val isReachable = isDeviceReachable(device.ipAddress)
-                    if (isReachable) {
-                        checkDeviceAsync(device.ipAddress)
-                    } else {
-                        // Если устройство недоступно, добавляем его в список как оффлайн
-                        synchronized(devices) {
-                            devices.add(device.copy(isOnline = false))
-                        }
-                    }
-                    val progress = scannedCount.incrementAndGet().toFloat() / (existingDevices.size + newAddresses.size)
-                    onProgress(progress)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error checking existing device ${device.ipAddress}: ${e.message}")
-                    synchronized(devices) {
-                        devices.add(device.copy(isOnline = false))
-                    }
+            synchronized(devices) {
+                val index = devices.indexOfFirst { it.mac == device.mac }
+                if (index != -1) {
+                    devices[index] = device.copy(isOnline = false)
                 }
             }
         }
 
-        // Сканируем новые адреса
-        val chunks = newAddresses.chunked(10)
+        // Сканируем адреса
+        val chunks = addresses.chunked(10)
         chunks.forEach { chunk ->
             chunk.forEach { host ->
                 jobs += launch {
                     try {
                         checkDeviceAsync(host)
-                        val progress = scannedCount.incrementAndGet().toFloat() / (existingDevices.size + newAddresses.size)
+                        val progress = scannedCount.incrementAndGet().toFloat() / addresses.size
                         onProgress(progress)
                         Log.d(TAG, "Scanned $host (${(progress * 100).toInt()}%)")
                     } catch (e: Exception) {
@@ -178,138 +169,51 @@ class NetworkScannerNew(private val context: Context) {
                     socket.soTimeout = READ_TIMEOUT
                     Log.d(TAG, "Set socket timeout for $ip")
 
-                    // Отправляем HTTP GET запрос к корневому пути
+                    // Отправляем HTTP GET запрос
                     val request = """
                         GET /settings?action=discover HTTP/1.1
-                        Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
-                        Accept-Encoding: gzip, deflate
-                        Accept-Language: ru,en;q=0.9
-                        Cache-Control: max-age=0
-                        Connection: keep-alive
                         Host: $ip
-                        Upgrade-Insecure-Requests: 1
-                        User-Agent: Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Mobile Safari/537.36
-
+                        Accept: */*
+                        Accept-Encoding: gzip, deflate
+                        Connection: close
+                        User-Agent: Mozilla/5.0 SettingsDiscover/1.0
+                        
                     """.trimIndent().replace("\n", "\r\n") + "\r\n"
 
-                    Log.d(TAG, "Sending request to $ip:\n$request")
-                    val outputStream = socket.getOutputStream()
-                    outputStream.write(request.toByteArray())
-                    outputStream.flush()
-                    Log.d(TAG, "Request sent to $ip")
+                    Log.d(TAG, "Sending request to $ip")
+                    socket.getOutputStream().write(request.toByteArray())
+                    socket.getOutputStream().flush()
 
                     // Читаем ответ
                     val inputStream = socket.getInputStream()
-                    
-                    // Читаем заголовки
-                    var contentLength = 0
-                    var isGzip = false
-                    var statusCode = 0
-                    val headerBuffer = ByteArray(8192)
-                    var headerEnd = false
-                    var headerBytesRead = 0
-                    val headerBuilder = StringBuilder()
-                    
-                    // Читаем заголовки до двойного CRLF
-                    while (!headerEnd && headerBytesRead < headerBuffer.size) {
-                        val read = inputStream.read(headerBuffer, headerBytesRead, 1)
-                        if (read == -1) break
-                        
-                        headerBytesRead++
-                        headerBuilder.append(headerBuffer[headerBytesRead - 1].toInt().toChar())
-                        
-                        if (headerBuilder.endsWith("\r\n\r\n")) {
-                            headerEnd = true
+                    val reader = BufferedReader(InputStreamReader(inputStream))
+                    val response = StringBuilder()
+                    var line: String?
+                    var isBody = false
+
+                    while (reader.readLine().also { line = it } != null) {
+                        if (line.isNullOrEmpty()) {
+                            isBody = true
+                            continue
                         }
-                    }
-                    
-                    // Парсим заголовки
-                    val headers = headerBuilder.toString().split("\r\n")
-                    headers.forEach { line ->
-                        if (line.isNotEmpty()) {
-                            Log.d(TAG, "Response header from $ip: $line")
-                            if (line.startsWith("HTTP/1.1 ")) {
-                                statusCode = line.substring(9, 12).toInt()
-                            } else if (line.startsWith("Content-Length: ")) {
-                                contentLength = line.substring(15).trim().toInt()
-                            } else if (line.startsWith("Content-Encoding: ") && line.contains("gzip")) {
-                                isGzip = true
-                            }
+                        if (isBody) {
+                            response.append(line)
                         }
                     }
 
-                    // Проверяем статус ответа
-                    if (statusCode != 200) {
-                        Log.w(TAG, "Bad response status from $ip: $statusCode")
-                        socket.close()
-                        return@withContext
-                    }
+                    val responseStr = response.toString()
+                    Log.d(TAG, "Response from $ip: $responseStr")
 
-                    // Проверяем размер ответа
-                    if (contentLength > MAX_RESPONSE_SIZE) {
-                        Log.w(TAG, "Response too large from $ip: $contentLength bytes")
-                        socket.close()
-                        return@withContext
-                    }
-
-                    // Читаем тело ответа
-                    val responseStream = ByteArrayOutputStream()
-                    val buffer = ByteArray(8192)
-                    
-                    if (contentLength > 0) {
-                        // Если есть Content-Length, читаем указанное количество байт
-                        var bytesRead = 0
-                        while (bytesRead < contentLength) {
-                            val read = inputStream.read(buffer, 0, Math.min(buffer.size, contentLength - bytesRead))
-                            if (read == -1) break
-                            responseStream.write(buffer, 0, read)
-                            bytesRead += read
-                        }
-                    } else {
-                        // Если нет Content-Length, читаем до закрытия соединения
+                    if (responseStr.isNotEmpty()) {
                         try {
-                            while (true) {
-                                val read = inputStream.read(buffer)
-                                if (read == -1) break
-                                responseStream.write(buffer, 0, read)
-                            }
-                        } catch (e: Exception) {
-                            // Игнорируем ошибку закрытия соединения
-                            Log.d(TAG, "Connection closed by server")
-                        }
-                    }
-
-                    val responseBytes = responseStream.toByteArray()
-                    Log.d(TAG, "Read ${responseBytes.size} bytes from $ip")
-
-                    // Распаковываем gzip если нужно
-                    val responseBody = if (isGzip) {
-                        try {
-                            val gzipStream = GZIPInputStream(responseBytes.inputStream())
-                            val result = gzipStream.readBytes()
-                            String(result, StandardCharsets.UTF_8)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to decompress gzip response: ${e.message}")
-                            String(responseBytes, StandardCharsets.UTF_8)
-                        }
-                    } else {
-                        String(responseBytes, StandardCharsets.UTF_8)
-                    }
-
-                    Log.d(TAG, "Raw response from $ip: $responseBody")
-
-                    try {
-                        val json = JSONObject(responseBody)
-                        
-                        // Проверяем, что это ответ на discover
-                        if (json.optString("type") == "discover") {
+                            val json = JSONObject(responseStr)
                             val device = Device(
-                                name = json.getString("name"),
-                                mac = json.getString("mac"),
                                 ipAddress = ip,
+                                name = json.getString("name"),
                                 type = json.optString("type", "Unknown"),
+                                mac = json.getString("mac"),
                                 version = json.optString("version", "Unknown"),
-                                isOnline = true // Устройство точно онлайн, так как мы получили от него ответ
+                                isOnline = true
                             )
                             synchronized(devices) {
                                 // Удаляем старую версию устройства, если она есть
@@ -318,9 +222,9 @@ class NetworkScannerNew(private val context: Context) {
                                 devices.add(device)
                             }
                             Log.d(TAG, "Found device: $device")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error parsing JSON from $ip: ${e.message}")
                         }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "Failed to parse JSON from $ip: ${e.message}")
                     }
 
                     socket.close()
@@ -540,5 +444,76 @@ class NetworkScannerNew(private val context: Context) {
         withContext(Dispatchers.Main) {
             onStatusUpdated(updatedDevices)
         }
+    }
+
+    suspend fun checkSingleDevice(ipAddress: String): Device? = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Checking single device at $ipAddress")
+            if (!isDeviceReachable(ipAddress)) {
+                Log.d(TAG, "Device at $ipAddress is not reachable")
+                return@withContext null
+            }
+
+            var socket: Socket? = null
+            try {
+                socket = Socket()
+                socket.connect(InetSocketAddress(ipAddress, 80), CONNECT_TIMEOUT)
+                socket.soTimeout = READ_TIMEOUT
+
+                val request = """
+                    GET /settings?action=discover HTTP/1.1
+                    Host: $ipAddress
+                    Accept: */*
+                    Accept-Encoding: gzip, deflate
+                    Connection: close
+                    User-Agent: Mozilla/5.0 SettingsDiscover/1.0
+                    
+                """.trimIndent().replace("\n", "\r\n") + "\r\n"
+
+                Log.d(TAG, "Sending request to $ipAddress")
+                socket.getOutputStream().write(request.toByteArray())
+                socket.getOutputStream().flush()
+
+                val inputStream = socket.getInputStream()
+                val reader = BufferedReader(InputStreamReader(inputStream))
+                val response = StringBuilder()
+                var line: String?
+                var isBody = false
+
+                while (reader.readLine().also { line = it } != null) {
+                    if (line.isNullOrEmpty()) {
+                        isBody = true
+                        continue
+                    }
+                    if (isBody) {
+                        response.append(line)
+                    }
+                }
+
+                val responseStr = response.toString()
+                Log.d(TAG, "Response from $ipAddress: $responseStr")
+
+                if (responseStr.isNotEmpty()) {
+                    try {
+                        val json = JSONObject(responseStr)
+                        return@withContext Device(
+                            ipAddress = ipAddress,
+                            name = json.getString("name"),
+                            type = json.optString("type", "Unknown"),
+                            mac = json.getString("mac"),
+                            version = json.optString("version", "Unknown"),
+                            isOnline = true
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error parsing JSON from $ipAddress: ${e.message}")
+                    }
+                }
+            } finally {
+                socket?.close()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking device at $ipAddress: ${e.message}")
+        }
+        return@withContext null
     }
 } 
