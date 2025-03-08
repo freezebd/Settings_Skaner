@@ -1,0 +1,132 @@
+{
+  "package": {
+    "productName": "GyverHub Desktop",
+    "version": "0.0.3"
+  },
+  "tauri": {
+    "pattern": {
+      "use": "brownfield"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "url": "app://localhost/",
+        "fileDropEnabled": false,
+        "width": 800,
+        "height": 600,
+        "minWidth": 450,
+        "minHeight": 450,
+        "title": "GyverHub Desktop",
+        "additionalBrowserArgs": "--disable-client-side-phishing-detection --disable-component-extensions-with-background-pages --disable-extensions --disable-background-timer-throttling --allow-running-insecure-content --disable-features=InterestFeedContentSuggestions,Translate,WebRtcHideLocalIpsWithMdns,BlockInsecurePrivateNetworkRequests,BlockInsecurePrivateNetworkRequestsDeprecationTrial --enable-blink-features=PrivateNetworkAccessNonSecureContextsAllowed"
+      }
+    ],
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "ru.nekodev.gyverhub.desktop",
+      "publisher": "NekoNekoNyan",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ],
+      "copyright": "(c) NekoNekoNyan, 2024",
+      "category": "Utility",
+      "shortDescription": "A desktop client for GyverHub",
+      "longDescription": "A desktop client for GyverHub",
+      "windows": {
+        "digestAlgorithm": "SHA-256",
+        "webviewInstallMode": {
+          "type": "downloadBootstrapper",
+          "silent": true
+        },
+        "wix": {
+          "language": "ru-RU",
+          "license": "../license.msi.txt"
+        },
+        "nsis": {
+          "license": "../license.nsis.txt",
+          "installMode": "both",
+          "displayLanguageSelector": true,
+          "languages": ["Russian", "English"]
+        }
+      },
+      "macOS": {
+        "minimumSystemVersion": "10.13",
+        "license": "../license.msi.txt",
+        "entitlements": "Entitlements.plist"
+      }
+    },
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "open": true,
+        "scope": []
+      },
+      "dialog": {
+        "all": true
+      }
+    },
+    "security": {
+      "dangerousRemoteDomainIpcAccess": [
+        {
+          "windows": ["main"],
+          "domain": "localhost",
+          "scheme": "app",
+          "enableTauriAPI": true
+        },
+        {
+          "windows": ["main"],
+          "domain": "app.localhost",
+          "scheme": "https",
+          "enableTauriAPI": true
+        }
+      ]
+    },
+    "cli": {
+      "args": [
+        {
+          "name": "keep-version",
+          "short": "k",
+          "description": "Do not update client, keep current version"
+        },
+        {
+          "name": "builtin",
+          "short": "b",
+          "description": "Always builtin client (implies --keep-version)"
+        },
+        {
+          "name": "force-update",
+          "short": "u",
+          "description": "Perform update even if latest version is installed"
+        },
+        {
+          "name": "clean",
+          "description": "Clean all application data (implies --force-update)"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "description": "Show this help message and exit"
+        },
+        {
+          "name": "version",
+          "short": "V",
+          "description": "Show version and exit"
+        }
+      ]
+    }
+  },
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devPath": [
+      "../src/index.html"
+    ],
+    "distDir": [
+      "../src/index.html"
+    ]
+  }
+}

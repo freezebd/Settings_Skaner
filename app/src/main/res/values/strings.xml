@@ -1,3 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Settings</string>
+    <string name="ip_hint">Enter IP address</string>
+    <string name="ip_example">Example: 192.168.1.39</string>
+    <string name="check_ip">Check IP</string>
+    <string name="search">Search</string>
+    <string name="progress">Progress: %d%%</string>
+    <string name="found_devices">Found devices</string>
+    <string name="online">Online</string>
+    <string name="offline">Offline</string>
+    <string name="remove_device">Remove device</string>
+    <string name="remove_confirm">Remove %s?</string>
+    <string name="update_library">Update Settings library on device</string>
 </resources>

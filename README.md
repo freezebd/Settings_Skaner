@@ -1,79 +1,47 @@
-# Settings App
+# Settings Discover
 
-Mobile application for discovering and managing ESP devices with Settings library.
-
-[Русская версия](#русская-версия)
-
-## Features
-- Automatic network scanning for ESP devices
-- Real-time device status monitoring
-- Support for multiple devices
-- Easy device management (add/remove)
-- Dark/Light theme support
-- Material Design 3 UI
-
-## Technical Details
-- Minimum Android version: 10 (API 29)
-- Target Android version: 14 (API 34)
-- Written in Kotlin using Jetpack Compose
-- Uses coroutines for asynchronous operations
-- Network discovery via HTTP requests
-- Persistent device storage
-
-## Installation
-1. Download the latest APK from [Releases](../../releases)
-2. Enable "Install from unknown sources" in Android settings
-3. Install the APK
-
-## Usage
-1. Launch the app
-2. Press "Search" to scan your network for devices
-3. Or enter a specific IP address and press "Check IP"
-4. Found devices will appear in the list
-5. Click on an online device to open its web interface
-6. Long press on a device to remove it from the list
-
-## Network Requirements
-- Devices should be on the same network
-- Port 80 should be accessible
-- Devices should support Settings library API
-
----
-
-# Русская версия
-
-Мобильное приложение для поиска и управления ESP устройствами с библиотекой Settings.
+Приложение для поиска и управления устройствами с библиотекой [Settings](https://github.com/GyverLibs/Settings) в локальной сети.
 
 ## Возможности
-- Автоматическое сканирование сети для поиска ESP устройств
-- Мониторинг статуса устройств в реальном времени
-- Поддержка нескольких устройств
-- Удобное управление устройствами (добавление/удаление)
-- Поддержка темной/светлой темы
-- Интерфейс в стиле Material Design 3
+- Автоматическое сканирование сети и обнаружение устройств
+- Отображение статуса устройств (в сети/не в сети)
+- Быстрый доступ к веб-интерфейсу устройств
+- Сохранение найденных устройств
+- Удаление устройств свайпом влево
+- Отображение IP и MAC адресов устройств
+- Поддержка всех устройств с библиотекой Settings v1.0.13+
 
-## Технические детали
-- Минимальная версия Android: 10 (API 29)
-- Целевая версия Android: 14 (API 34)
-- Написано на Kotlin с использованием Jetpack Compose
-- Использует корутины для асинхронных операций
-- Поиск устройств через HTTP запросы
-- Сохранение списка устройств между запусками
+## Особенности
+- Современный Material You дизайн
+- Поддержка светлой и тёмной темы
+- Встроенный веб-просмотр без элементов браузера
+- Параллельное сканирование для быстрого поиска
+- Автоматическое обновление статуса устройств
+
+## Системные требования
+- Android 10.0 (API 29) и выше
+- Разрешение на доступ к локальной сети
+- Включенный Wi-Fi
 
 ## Установка
-1. Скачайте последнюю версию APK из раздела [Releases](../../releases)
-2. Включите "Установка из неизвестных источников" в настройках Android
-3. Установите APK
+1. Скачайте последнюю версию APK из [релизов](https://github.com/YOUR_USERNAME/settingd/releases)
+2. Разрешите установку из неизвестных источников
+3. Установите APK файл
 
 ## Использование
-1. Запустите приложение
-2. Нажмите "Поиск" для сканирования сети
-3. Или введите конкретный IP-адрес и нажмите "Проверить IP"
-4. Найденные устройства появятся в списке
-5. Нажмите на устройство в сети для открытия веб-интерфейса
-6. Удерживайте устройство для удаления из списка
+1. Подключитесь к той же Wi-Fi сети, что и ваши устройства
+2. Запустите приложение
+3. Нажмите кнопку обновления для поиска устройств
+4. Нажмите на карточку устройства для доступа к его веб-интерфейсу
+5. Свайпните карточку влево для удаления устройства из списка
 
-## Требования к сети
-- Устройства должны быть в одной сети
-- Порт 80 должен быть доступен
-- Устройства должны поддерживать API библиотеки Settings 
+## Разработка
+Проект использует:
+- Kotlin
+- Jetpack Compose
+- Material 3
+- Coroutines
+- WebView
+
+## Лицензия
+MIT License 
