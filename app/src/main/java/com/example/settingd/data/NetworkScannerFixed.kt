@@ -1,331 +1,198 @@
 package com.example.settingd.data
 
 import android.content.Context
+import android.net.DhcpInfo
 import android.net.wifi.WifiManager
 import android.util.Log
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
-import org.json.JSONObject
 
 class NetworkScannerFixed(private val context: Context) {
     private val TAG = "NetworkScannerFixed"
-    private val devices = mutableListOf<Device>()
-    private val scannedCount = AtomicInteger(0)
-    private var onProgressUpdate: ((Float) -> Unit)? = null
-    private val prefs = context.getSharedPreferences("NetworkScanner", Context.MODE_PRIVATE)
-    private val scope = CoroutineScope(Dispatchers.Main + Job())
-    private var statusCheckJob: Job? = null
+    private val SOCKET_TIMEOUT = 800 // ms
+    private val BATCH_SIZE = 32 // количество одновременных проверок
+    private val STATUS_CHECK_INTERVAL = 3000L // ms
     
-    // Константы для настройки сканирования
-    private val SOCKET_TIMEOUT = 800 // Уменьшаем таймаут
-    private val BATCH_SIZE = 32 // Увеличиваем размер батча для параллельного сканирования
-    private val STATUS_CHECK_INTERVAL = 3000L
+    private val devices = ConcurrentHashMap<String, Device>()
+    private val _scanProgress = MutableStateFlow(0f)
+    val scanProgress = _scanProgress
 
     data class Device(
         val ipAddress: String,
-        val name: String,
         val mac: String,
-        val type: String,
-        var isOnline: Boolean = false
+        val name: String,
+        var isOnline: Boolean = true,
+        val type: String = "ESP",
+        val version: String = ""
     )
 
-    init {
-        loadDevices()
-        startStatusCheck()
-    }
-
-    fun setOnProgressUpdateListener(listener: (Float) -> Unit) {
-        onProgressUpdate = listener
-    }
-
-    private fun startStatusCheck() {
-        stopStatusCheck()
-        statusCheckJob = scope.launch(Dispatchers.IO) {
-            while (isActive) {
-                try {
-                    checkDevicesStatus()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Ошибка при проверке статуса устройств: ${e.message}")
-                }
-                delay(STATUS_CHECK_INTERVAL)
-            }
-        }
-    }
-
-    private suspend fun checkDevicesStatus() {
-        Log.d(TAG, "Начало проверки статуса для ${devices.size} устройств")
-        
-        val devicesCopy = synchronized(devices) { devices.toList() }
-        var hasChanges = false
-
-        // Проверяем устройства последовательно
-        devicesCopy.forEach { device ->
-            try {
-                val isReachable = isDeviceReachable(device.ipAddress)
-                synchronized(devices) {
-                    val existingDevice = devices.find { it.mac == device.mac }
-                    if (existingDevice != null && existingDevice.isOnline != isReachable) {
-                        Log.d(TAG, "Статус устройства ${device.name} (${device.ipAddress}) изменился на: ${if (isReachable) "онлайн" else "оффлайн"}")
-                        existingDevice.isOnline = isReachable
-                        hasChanges = true
-                        // Немедленно сохраняем изменения и обновляем UI
-                        saveDevices()
-                        scope.launch(Dispatchers.Main) {
-                            onProgressUpdate?.invoke(-1f)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Ошибка проверки ${device.name}: ${e.message}")
-            }
-        }
-    }
-
-    suspend fun scanNetwork(): List<Device> = coroutineScope {
-        scannedCount.set(0)
-        onProgressUpdate?.invoke(0f)
-
+    suspend fun scanNetwork(onProgressUpdate: (Float) -> Unit = {}) = coroutineScope {
         val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        val dhcpInfo = wifiManager.dhcpInfo
-        val ipAddress = dhcpInfo.ipAddress
+        val dhcpInfo: DhcpInfo = wifiManager.dhcpInfo
+        val baseIp = dhcpInfo.gateway
 
-        // Получаем список IP для сканирования
         val addresses = mutableListOf<String>()
+        // Сканируем адреса в диапазоне шлюза
+        for (i in 1..254) {
+            val testIp = (baseIp and 0xFF000000.toInt()) or
+                        ((baseIp and 0x00FF0000.toInt()) shr 16 shl 16) or
+                        ((baseIp and 0x0000FF00.toInt()) shr 8 shl 8) or i
+            addresses.add(formatIp(testIp))
+        }
+
         // Добавляем специальный IP для ESP устройств
         addresses.add("192.168.4.1")
-        
-        // Получаем текущую подсеть
-        val firstOctet = ipAddress and 0xff
-        val secondOctet = (ipAddress shr 8) and 0xff
-        val thirdOctet = (ipAddress shr 16) and 0xff
 
-        // Сканируем всю подсеть
-        for (i in 1..254) {
-            addresses.add("$firstOctet.$secondOctet.$thirdOctet.$i")
-        }
-
-        Log.d(TAG, "Начало сканирования ${addresses.size} адресов")
         val totalAddresses = addresses.size
+        var scannedCount = 0
 
-        // Разбиваем на батчи и сканируем параллельно
-        addresses.chunked(BATCH_SIZE).forEachIndexed { batchIndex, batch ->
-            coroutineScope {
-                val jobs = batch.map { host ->
-                    async(Dispatchers.IO) {
-                        try {
-                            checkDeviceAsync(host)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Ошибка сканирования $host: ${e.message}")
-                        }
-                    }
-                }
-                jobs.awaitAll()
-                
-                val progress = ((batchIndex + 1) * BATCH_SIZE * 100f) / totalAddresses
-                withContext(Dispatchers.Main) {
-                    onProgressUpdate?.invoke(progress.coerceAtMost(100f))
+        // Разбиваем адреса на батчи для параллельного сканирования
+        addresses.chunked(BATCH_SIZE).forEach { batch ->
+            val deferreds = batch.map { address ->
+                async(Dispatchers.IO) {
+                    checkDevice(address)
+                    scannedCount++
+                    val progress = (scannedCount.toFloat() / totalAddresses) * 100
+                    _scanProgress.value = progress
+                    onProgressUpdate(progress)
                 }
             }
+            deferreds.awaitAll()
         }
 
-        Log.d(TAG, "Сканирование завершено. Найдено ${devices.size} устройств")
-        withContext(Dispatchers.Main) {
-            onProgressUpdate?.invoke(100f)
+        _scanProgress.value = -1f
+        devices.values.toList()
+    }
+
+    private suspend fun checkDevice(ipAddress: String) {
+        if (!isDeviceReachable(ipAddress)) {
+            return
         }
 
-        devices.toList()
+        val response = sendHttpRequest(ipAddress)
+        if (response != null) {
+            try {
+                parseDeviceResponse(ipAddress, response)?.let { device ->
+                    devices[device.mac] = device
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error parsing response from $ipAddress: ${e.message}")
+            }
+        }
     }
 
     private fun isDeviceReachable(host: String): Boolean {
-        var socket: Socket? = null
         return try {
-            socket = Socket()
-            socket.connect(InetSocketAddress(host, 80), SOCKET_TIMEOUT)
-            socket.isConnected
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(host, 80), SOCKET_TIMEOUT)
+                true
+            }
         } catch (e: Exception) {
             false
-        } finally {
-            try {
-                socket?.close()
-            } catch (e: Exception) { }
-        }
-    }
-
-    private suspend fun checkDeviceAsync(host: String) = withContext(Dispatchers.IO) {
-        if (!isDeviceReachable(host)) {
-            return@withContext
-        }
-
-        val response = sendHttpRequest(host)
-        if (response != null) {
-            try {
-                val device = parseDeviceResponse(response, host)
-                if (device != null) {
-                    val updatedDevice = device.copy(isOnline = true)
-                    synchronized(devices) {
-                        val existingIndex = devices.indexOfFirst { it.mac == device.mac }
-                        if (existingIndex != -1) {
-                            devices[existingIndex] = updatedDevice
-                        } else {
-                            devices.add(updatedDevice)
-                        }
-                        saveDevices()
-                    }
-                    withContext(Dispatchers.Main) {
-                        onProgressUpdate?.invoke(-1f)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error parsing response from $host: ${e.message}")
-            }
         }
     }
 
     private suspend fun sendHttpRequest(ipAddress: String): String? = withContext(Dispatchers.IO) {
-        var socket: Socket? = null
         try {
-            socket = Socket()
-            socket.connect(InetSocketAddress(ipAddress, 80), SOCKET_TIMEOUT)
-            socket.soTimeout = SOCKET_TIMEOUT
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(ipAddress, 80), SOCKET_TIMEOUT)
+                socket.soTimeout = SOCKET_TIMEOUT
 
-            val request = "GET /settings?action=discover HTTP/1.1\r\nHost: $ipAddress\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
-            socket.getOutputStream().write(request.toByteArray(StandardCharsets.UTF_8))
-            socket.getOutputStream().flush()
+                // Формируем запрос в формате GyverSettings
+                val request = """
+                    GET /settings?action=discover HTTP/1.1
+                    Host: $ipAddress
+                    Connection: close
+                    User-Agent: SettingsDiscover/1.0.0
+                    Accept: application/json
+                    
+                """.trimIndent()
 
-            val inputStream = socket.getInputStream()
-            val response = StringBuilder()
-            val buffer = ByteArray(1024)
-            var bytesRead: Int
-            
-            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                response.append(String(buffer, 0, bytesRead, StandardCharsets.UTF_8))
-            }
+                socket.getOutputStream().write(request.toByteArray(StandardCharsets.UTF_8))
 
-            val jsonStart = response.indexOf("{")
-            val jsonEnd = response.lastIndexOf("}")
-            
-            if (jsonStart != -1 && jsonEnd != -1) {
-                response.substring(jsonStart, jsonEnd + 1)
-            } else {
-                null
+                BufferedReader(InputStreamReader(socket.getInputStream())).use { reader ->
+                    val response = StringBuilder()
+                    var line: String?
+                    var emptyLineFound = false
+
+                    while (reader.readLine().also { line = it } != null) {
+                        response.append(line).append("\n")
+                        if (line?.isEmpty() == true) {
+                            emptyLineFound = true
+                            // Читаем тело ответа
+                            while (reader.readLine().also { line = it } != null) {
+                                response.append(line).append("\n")
+                            }
+                            break
+                        }
+                    }
+
+                    if (emptyLineFound) response.toString() else null
+                }
             }
         } catch (e: Exception) {
+            Log.e(TAG, "Error sending HTTP request to $ipAddress: ${e.message}")
             null
-        } finally {
-            try {
-                socket?.close()
-            } catch (e: Exception) { }
         }
     }
 
-    private fun parseDeviceResponse(response: String, ipAddress: String): Device? {
+    private fun parseDeviceResponse(ipAddress: String, response: String): Device? {
         try {
-            val json = JSONObject(response)
-            
-            // Проверяем тип как в веб-версии
-            if (json.optString("type") != "discover") {
+            if (!response.contains("application/json")) {
                 return null
             }
 
-            val name = json.optString("name", "")
-            val mac = json.optString("mac", "")
-            
-            if (name.isEmpty() || mac.isEmpty()) {
+            val jsonStart = response.indexOf("{")
+            if (jsonStart == -1) {
                 return null
             }
-            
+
+            val jsonStr = response.substring(jsonStart).trim()
+            val json = JSONObject(jsonStr)
+
+            // Парсим ответ в формате GyverSettings
             return Device(
                 ipAddress = ipAddress,
-                name = name,
-                mac = mac,
-                type = "discover",
-                isOnline = true
+                mac = json.optString("mac", "unknown"),
+                name = json.optString("name", "ESP Device"),
+                isOnline = true,
+                type = json.optString("type", "ESP"),
+                version = json.optString("version", "")
             )
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing device response: ${e.message}")
+            Log.e(TAG, "Error parsing JSON from $ipAddress: ${e.message}")
             return null
         }
     }
 
-    private fun saveDevices() {
-        synchronized(devices) {
-            val deviceSet = devices.map { device ->
-                "${device.ipAddress}|${device.name}|${device.mac}|${device.isOnline}"
-            }.toSet()
-            
-            prefs.edit()
-                .clear()
-                .putStringSet("saved_devices", deviceSet)
-                .apply()
-        }
+    private fun formatIp(ip: Int): String {
+        return "${ip and 0xFF}.${ip shr 8 and 0xFF}.${ip shr 16 and 0xFF}.${ip shr 24 and 0xFF}"
     }
 
-    fun clearDevices() {
-        devices.clear()
-        saveDevices()
-    }
-
-    fun removeDevice(mac: String) {
-        devices.removeAll { it.mac == mac }
-        saveDevices()
-    }
-
-    fun getDevices(): List<Device> = synchronized(devices) { devices.toList() }
-
-    private fun loadDevices() {
-        synchronized(devices) {
-            val savedDevices = prefs.getStringSet("saved_devices", null)
-            devices.clear()
-            
-            savedDevices?.forEach { deviceStr ->
-                try {
-                    val parts = deviceStr.split("|")
-                    if (parts.size >= 4) { // Теперь проверяем 4 части
-                        val device = Device(
-                            ipAddress = parts[0],
-                            name = parts[1],
-                            mac = parts[2],
-                            type = "discover",
-                            isOnline = parts[3].toBoolean() // Загружаем сохраненное состояние
-                        )
-                        if (!devices.any { it.mac == device.mac }) {
-                            devices.add(device)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Ошибка загрузки устройства: $deviceStr", e)
+    suspend fun checkDevicesStatus() = coroutineScope {
+        while (true) {
+            devices.forEach { (mac, device) ->
+                launch(Dispatchers.IO) {
+                    val isOnline = isDeviceReachable(device.ipAddress)
+                    val updatedDevice = device.copy(isOnline = isOnline)
+                    devices[mac] = updatedDevice
                 }
             }
+            delay(STATUS_CHECK_INTERVAL)
         }
     }
 
-    fun cleanup() {
-        stopStatusCheck()
-        scope.cancel()
-    }
+    fun getDevices(): List<Device> = devices.values.toList()
 
-    private fun stopStatusCheck() {
-        statusCheckJob?.cancel()
-        statusCheckJob = null
-    }
-
-    suspend fun scanSingleDevice(ipAddress: String): List<Device> = coroutineScope {
-        scannedCount.set(0)
-        onProgressUpdate?.invoke(0f)
-
-        try {
-            checkDeviceAsync(ipAddress)
-            scannedCount.incrementAndGet()
-            onProgressUpdate?.invoke(100f)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error checking device at $ipAddress: ${e.message}")
-        }
-        
-        devices
+    fun removeDevice(mac: String) {
+        devices.remove(mac)
     }
 } 

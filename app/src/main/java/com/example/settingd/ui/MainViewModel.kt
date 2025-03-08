@@ -1,83 +1,161 @@
 package com.example.settingd.ui
 
-import android.app.Application
 import android.content.Context
-import android.net.wifi.WifiManager
-import android.util.Log
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.settingd.data.NetworkScannerFixed
+import com.example.settingd.data.NetworkScannerNew
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 
-class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val TAG = "MainViewModel"
-    private val networkScanner = NetworkScannerFixed(application)
-
+class MainViewModel(private val context: Context) : ViewModel() {
+    private val networkScanner = NetworkScannerNew(context)
+    private val PREFS_NAME = "SettingsDiscover"
+    private val DEVICES_KEY = "saved_devices"
+    
+    private val _devices = MutableStateFlow<List<NetworkScannerNew.Device>>(emptyList())
+    val devices: StateFlow<List<NetworkScannerNew.Device>> = _devices.asStateFlow()
+    
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+    
     private val _scanProgress = MutableStateFlow(0f)
     val scanProgress: StateFlow<Float> = _scanProgress.asStateFlow()
-
-    private val _devices = MutableStateFlow<List<NetworkScannerFixed.Device>>(emptyList())
-    val devices: StateFlow<List<NetworkScannerFixed.Device>> = _devices.asStateFlow()
-
+    
     init {
-        networkScanner.setOnProgressUpdateListener { progress ->
-            viewModelScope.launch {
-                _scanProgress.emit(progress)
-                if (progress == -1f || progress == 100f) {
-                    _devices.emit(networkScanner.getDevices())
+        loadSavedDevices()
+        checkSavedDevices()
+    }
+    
+    private fun checkSavedDevices() {
+        viewModelScope.launch {
+            val currentDevices = _devices.value
+            if (currentDevices.isEmpty()) return@launch
+            
+            _isScanning.value = true
+            _scanProgress.value = 0f
+            
+            networkScanner.scanNetwork { progress ->
+                _scanProgress.value = progress
+            }.also { newDevices ->
+                val updatedDevices = mutableListOf<NetworkScannerNew.Device>()
+                
+                // Обновляем статус существующих устройств
+                currentDevices.forEach { existingDevice ->
+                    val newDevice = newDevices.find { it.mac == existingDevice.mac }
+                    if (newDevice != null) {
+                        updatedDevices.add(newDevice)
+                    } else {
+                        updatedDevices.add(existingDevice.copy(isOnline = false))
+                    }
                 }
-            }
-        }
-        // Загружаем сохраненные устройства при создании ViewModel
-        viewModelScope.launch {
-            _devices.emit(networkScanner.getDevices())
-        }
-    }
-
-    fun scanNetwork() {
-        viewModelScope.launch {
-            try {
-                networkScanner.scanNetwork()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error scanning network", e)
+                
+                // Добавляем новые устройства
+                newDevices.forEach { newDevice ->
+                    if (updatedDevices.none { it.mac == newDevice.mac }) {
+                        updatedDevices.add(newDevice)
+                    }
+                }
+                
+                _devices.value = updatedDevices
+                saveDevices(updatedDevices)
+                _isScanning.value = false
             }
         }
     }
-
-    fun scanSingleDevice(ipAddress: String) {
+    
+    fun startScan() {
         viewModelScope.launch {
-            try {
-                networkScanner.scanSingleDevice(ipAddress)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error scanning device at $ipAddress", e)
+            _isScanning.value = true
+            _scanProgress.value = 0f
+            networkScanner.scanNetwork { progress ->
+                _scanProgress.value = progress
+            }.also { newDevices ->
+                val updatedDevices = mutableListOf<NetworkScannerNew.Device>()
+                val currentDevices = _devices.value
+                
+                // Обновляем статус существующих устройств
+                currentDevices.forEach { existingDevice ->
+                    val newDevice = newDevices.find { it.mac == existingDevice.mac }
+                    if (newDevice != null) {
+                        updatedDevices.add(newDevice)
+                    } else {
+                        updatedDevices.add(existingDevice.copy(isOnline = false))
+                    }
+                }
+                
+                // Добавляем новые устройства
+                newDevices.forEach { newDevice ->
+                    if (updatedDevices.none { it.mac == newDevice.mac }) {
+                        updatedDevices.add(newDevice)
+                    }
+                }
+                
+                _devices.value = updatedDevices
+                saveDevices(updatedDevices)
+                _isScanning.value = false
             }
         }
     }
-
-    fun removeDevice(mac: String) {
-        networkScanner.removeDevice(mac)
-        viewModelScope.launch {
-            _devices.emit(networkScanner.getDevices())
+    
+    fun removeDevice(device: NetworkScannerNew.Device) {
+        val updatedDevices = _devices.value.toMutableList()
+        updatedDevices.remove(device)
+        _devices.value = updatedDevices
+        saveDevices(updatedDevices)
+    }
+    
+    fun getLocalIpAddress(): String {
+        return networkScanner.getLocalIpAddress()
+    }
+    
+    private fun saveDevices(devices: List<NetworkScannerNew.Device>) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val jsonArray = JSONArray()
+        
+        devices.forEach { device ->
+            val jsonObject = JSONObject().apply {
+                put("name", device.name)
+                put("mac", device.mac)
+                put("ipAddress", device.ipAddress)
+                put("type", device.type)
+                put("version", device.version)
+                put("isOnline", device.isOnline)
+            }
+            jsonArray.put(jsonObject)
         }
+        
+        prefs.edit().putString(DEVICES_KEY, jsonArray.toString()).apply()
     }
-
-    fun getLocalIpAddress(context: Context): String {
-        val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        val ipAddress = wifiManager.dhcpInfo.ipAddress
-        return String.format(
-            "%d.%d.%d.%d",
-            ipAddress and 0xff,
-            (ipAddress shr 8) and 0xff,
-            (ipAddress shr 16) and 0xff,
-            (ipAddress shr 24) and 0xff
-        )
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        networkScanner.cleanup()
+    
+    private fun loadSavedDevices() {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedDevicesJson = prefs.getString(DEVICES_KEY, "[]")
+        
+        try {
+            val jsonArray = JSONArray(savedDevicesJson)
+            val devices = mutableListOf<NetworkScannerNew.Device>()
+            
+            for (i in 0 until jsonArray.length()) {
+                val jsonObject = jsonArray.getJSONObject(i)
+                devices.add(
+                    NetworkScannerNew.Device(
+                        name = jsonObject.getString("name"),
+                        mac = jsonObject.getString("mac"),
+                        ipAddress = jsonObject.getString("ipAddress"),
+                        type = jsonObject.getString("type"),
+                        version = jsonObject.getString("version"),
+                        isOnline = jsonObject.getBoolean("isOnline")
+                    )
+                )
+            }
+            
+            _devices.value = devices
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 } 
