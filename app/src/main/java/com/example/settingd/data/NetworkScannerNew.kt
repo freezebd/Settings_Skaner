@@ -22,6 +22,7 @@ import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 import java.util.zip.GZIPInputStream
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 
 class NetworkScannerNew(private val context: Context) {
     private val TAG = "NetworkScannerNew"
@@ -161,6 +162,13 @@ class NetworkScannerNew(private val context: Context) {
             try {
                 withContext(Dispatchers.IO) {
                     Log.d(TAG, "Attempting to connect to $ip (attempt ${retryCount + 1})")
+                    
+                    // Сначала проверяем базовую доступность устройства
+                    if (!isDeviceReachable(ip)) {
+                        Log.d(TAG, "Device $ip is not reachable")
+                        return@withContext
+                    }
+                    
                     val socket = Socket()
                     Log.d(TAG, "Socket created for $ip")
                     
@@ -300,9 +308,13 @@ class NetworkScannerNew(private val context: Context) {
                                 mac = json.getString("mac"),
                                 ipAddress = ip,
                                 type = json.optString("type", "Unknown"),
-                                version = json.optString("version", "Unknown")
+                                version = json.optString("version", "Unknown"),
+                                isOnline = true // Устройство точно онлайн, так как мы получили от него ответ
                             )
                             synchronized(devices) {
+                                // Удаляем старую версию устройства, если она есть
+                                devices.removeIf { it.mac == device.mac }
+                                // Добавляем новую версию
                                 devices.add(device)
                             }
                             Log.d(TAG, "Found device: $device")
@@ -392,8 +404,10 @@ class NetworkScannerNew(private val context: Context) {
     private fun isDeviceReachable(host: String): Boolean {
         var socket: Socket? = null
         return try {
+            Log.d(TAG, "Checking if device $host is reachable...")
             socket = Socket()
             socket.connect(InetSocketAddress(host, 80), CONNECT_TIMEOUT)
+            Log.d(TAG, "Device $host is reachable")
             socket.close()
             true
         } catch (e: Exception) {
@@ -437,5 +451,94 @@ class NetworkScannerNew(private val context: Context) {
             }
         }
         return if (line.isEmpty() && c == -1) null else line.toString()
+    }
+
+    suspend fun checkDevicesStatus(
+        existingDevices: List<Device>,
+        onStatusUpdated: (List<Device>) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        val updatedDevices = mutableListOf<Device>()
+
+        existingDevices.forEach { device ->
+            try {
+                Log.d(TAG, "Checking status for device: ${device.ipAddress}")
+                var socket: Socket? = null
+                try {
+                    socket = Socket()
+                    socket.connect(InetSocketAddress(device.ipAddress, 80), CONNECT_TIMEOUT)
+                    socket.soTimeout = READ_TIMEOUT
+
+                    val request = """
+                        GET /settings?action=discover HTTP/1.1
+                        Host: ${device.ipAddress}
+                        Accept: */*
+                        Connection: close
+                        
+                    """.trimIndent().replace("\n", "\r\n") + "\r\n"
+
+                    Log.d(TAG, "Sending request to ${device.ipAddress}")
+                    socket.getOutputStream().write(request.toByteArray())
+                    socket.getOutputStream().flush()
+
+                    val inputStream = socket.getInputStream()
+                    val reader = BufferedReader(InputStreamReader(inputStream))
+                    val response = StringBuilder()
+                    var line: String?
+                    var isBody = false
+
+                    while (reader.readLine().also { line = it } != null) {
+                        Log.d(TAG, "Received line: $line")
+                        if (line.isNullOrEmpty()) {
+                            isBody = true
+                            continue
+                        }
+                        if (isBody) {
+                            response.append(line)
+                        }
+                    }
+
+                    val responseStr = response.toString()
+                    Log.d(TAG, "Response from ${device.ipAddress}: $responseStr")
+
+                    if (responseStr.isNotEmpty()) {
+                        try {
+                            val json = JSONObject(responseStr)
+                            val responseMac = json.optString("mac", "")
+                            Log.d(TAG, "Comparing MACs - Device: ${device.mac}, Response: $responseMac")
+                            
+                            if (responseMac == device.mac) {
+                                Log.d(TAG, "Device ${device.ipAddress} is ONLINE")
+                                updatedDevices.add(device.copy(isOnline = true))
+                            } else {
+                                Log.d(TAG, "Device ${device.ipAddress} MAC mismatch")
+                                updatedDevices.add(device.copy(isOnline = false))
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error parsing JSON from ${device.ipAddress}: ${e.message}")
+                            updatedDevices.add(device.copy(isOnline = false))
+                        }
+                    } else {
+                        Log.d(TAG, "Empty response from ${device.ipAddress}")
+                        updatedDevices.add(device.copy(isOnline = false))
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Connection error for ${device.ipAddress}: ${e.message}")
+                    updatedDevices.add(device.copy(isOnline = false))
+                } finally {
+                    try {
+                        socket?.close()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error closing socket for ${device.ipAddress}: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "General error checking ${device.ipAddress}: ${e.message}")
+                updatedDevices.add(device.copy(isOnline = false))
+            }
+        }
+
+        withContext(Dispatchers.Main) {
+            onStatusUpdated(updatedDevices)
+        }
     }
 } 

@@ -7,7 +7,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,6 +19,10 @@ import androidx.compose.material.DismissValue
 import androidx.compose.material.SwipeToDismiss
 import androidx.compose.material.rememberDismissState
 import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
 @Composable
@@ -85,48 +88,62 @@ fun MainScreen(
                 items = devices,
                 key = { device -> device.mac }
             ) { device ->
+                var isDeleting by remember { mutableStateOf(false) }
                 val dismissState = rememberDismissState(
                     confirmStateChange = { dismissValue ->
                         when (dismissValue) {
                             DismissValue.DismissedToStart -> {
+                                isDeleting = true
                                 viewModel.removeDevice(device)
                                 true
                             }
-                            DismissValue.Default -> true
+                            DismissValue.Default -> {
+                                isDeleting = false
+                                true
+                            }
                             else -> false
                         }
                     }
                 )
 
-                SwipeToDismiss(
-                    state = dismissState,
-                    background = {
-                        val color = when {
-                            dismissState.dismissDirection == DismissDirection.EndToStart -> MaterialTheme.colorScheme.error
-                            else -> MaterialTheme.colorScheme.surface
-                        }
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(color)
-                                .padding(horizontal = 16.dp),
-                            contentAlignment = Alignment.CenterEnd
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Delete,
-                                contentDescription = "Delete",
-                                tint = MaterialTheme.colorScheme.onError
+                if (!isDeleting) {
+                    SwipeToDismiss(
+                        state = dismissState,
+                        background = {
+                            val scale by animateFloatAsState(
+                                if (dismissState.targetValue == DismissValue.Default) 0.75f else 1f,
+                                label = "scale"
                             )
-                        }
-                    },
-                    dismissContent = {
-                        DeviceCard(
-                            device = device,
-                            onClick = { onDeviceClick(device) }
-                        )
-                    },
-                    directions = setOf(DismissDirection.EndToStart)
-                )
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(MaterialTheme.shapes.medium)
+                                    .background(MaterialTheme.colorScheme.error)
+                                    .padding(horizontal = 20.dp),
+                                contentAlignment = Alignment.CenterEnd
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Delete",
+                                    modifier = Modifier.scale(scale),
+                                    tint = MaterialTheme.colorScheme.onError
+                                )
+                            }
+                        },
+                        dismissContent = {
+                            DeviceCard(
+                                device = device,
+                                onClick = { 
+                                    if (device.isOnline) {
+                                        onDeviceClick(device)
+                                    }
+                                }
+                            )
+                        },
+                        directions = setOf(DismissDirection.EndToStart)
+                    )
+                }
                 
                 Spacer(modifier = Modifier.height(8.dp))
             }
@@ -142,7 +159,11 @@ fun DeviceCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(
+                enabled = device.isOnline,
+                onClick = onClick
+            )
+            .alpha(if (device.isOnline) 1f else 0.7f)
     ) {
         Column(
             modifier = Modifier

@@ -4,12 +4,15 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.settingd.data.NetworkScannerNew
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.Job
 
 class MainViewModel(private val context: Context) : ViewModel() {
     private val networkScanner = NetworkScannerNew(context)
@@ -24,86 +27,73 @@ class MainViewModel(private val context: Context) : ViewModel() {
     
     private val _scanProgress = MutableStateFlow(0f)
     val scanProgress: StateFlow<Float> = _scanProgress.asStateFlow()
+
+    private var statusCheckJob: Job? = null
     
     init {
         loadSavedDevices()
-        checkSavedDevices()
+        startPeriodicStatusCheck()
     }
-    
-    private fun checkSavedDevices() {
-        viewModelScope.launch {
-            val currentDevices = _devices.value
-            if (currentDevices.isEmpty()) return@launch
-            
-            _isScanning.value = true
-            _scanProgress.value = 0f
-            
-            networkScanner.scanNetwork { progress ->
-                _scanProgress.value = progress
-            }.also { newDevices ->
-                val updatedDevices = mutableListOf<NetworkScannerNew.Device>()
-                
-                // Обновляем статус существующих устройств
-                currentDevices.forEach { existingDevice ->
-                    val newDevice = newDevices.find { it.mac == existingDevice.mac }
-                    if (newDevice != null) {
-                        updatedDevices.add(newDevice)
-                    } else {
-                        updatedDevices.add(existingDevice.copy(isOnline = false))
-                    }
+
+    private fun startPeriodicStatusCheck() {
+        statusCheckJob?.cancel() // Отменяем предыдущую проверку, если она есть
+        
+        statusCheckJob = viewModelScope.launch {
+            while (true) {
+                checkDevicesStatus()
+                delay(5000) // Ждем 5 секунд перед следующей проверкой
+            }
+        }
+    }
+
+    private suspend fun checkDevicesStatus() {
+        if (_isScanning.value) return // Пропускаем проверку, если идет сканирование
+        
+        val currentDevices = _devices.value
+        if (currentDevices.isNotEmpty()) {
+            try {
+                networkScanner.checkDevicesStatus(currentDevices) { updatedDevices ->
+                    _devices.value = updatedDevices.sortedWith(
+                        compareBy<NetworkScannerNew.Device> { !it.isOnline }
+                            .thenBy { it.name.lowercase() }
+                    )
+                    saveDevices(_devices.value)
                 }
-                
-                // Добавляем новые устройства
-                newDevices.forEach { newDevice ->
-                    if (updatedDevices.none { it.mac == newDevice.mac }) {
-                        updatedDevices.add(newDevice)
-                    }
-                }
-                
-                _devices.value = updatedDevices
-                saveDevices(updatedDevices)
-                _isScanning.value = false
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     }
     
     fun startScan() {
+        if (_isScanning.value) return // Предотвращаем повторный запуск сканирования
+        
         viewModelScope.launch {
             _isScanning.value = true
             _scanProgress.value = 0f
+            
             networkScanner.scanNetwork { progress ->
                 _scanProgress.value = progress
             }.also { newDevices ->
-                val updatedDevices = mutableListOf<NetworkScannerNew.Device>()
-                val currentDevices = _devices.value
+                // Сначала сохраняем найденные устройства
+                val foundDevices = newDevices.map { it.copy(isOnline = true) }
                 
-                // Обновляем статус существующих устройств
-                currentDevices.forEach { existingDevice ->
-                    val newDevice = newDevices.find { it.mac == existingDevice.mac }
-                    if (newDevice != null) {
-                        updatedDevices.add(newDevice)
-                    } else {
-                        updatedDevices.add(existingDevice.copy(isOnline = false))
-                    }
-                }
+                // Обновляем список устройств
+                _devices.value = foundDevices.sortedWith(
+                    compareBy<NetworkScannerNew.Device> { !it.isOnline }
+                        .thenBy { it.name.lowercase() }
+                )
                 
-                // Добавляем новые устройства
-                newDevices.forEach { newDevice ->
-                    if (updatedDevices.none { it.mac == newDevice.mac }) {
-                        updatedDevices.add(newDevice)
-                    }
-                }
+                // Сохраняем устройства
+                saveDevices(_devices.value)
                 
-                _devices.value = updatedDevices
-                saveDevices(updatedDevices)
                 _isScanning.value = false
             }
         }
     }
     
     fun removeDevice(device: NetworkScannerNew.Device) {
-        val updatedDevices = _devices.value.toMutableList()
-        updatedDevices.remove(device)
+        val updatedDevices = _devices.value.filter { it.mac != device.mac }
         _devices.value = updatedDevices
         saveDevices(updatedDevices)
     }
@@ -148,7 +138,7 @@ class MainViewModel(private val context: Context) : ViewModel() {
                         ipAddress = jsonObject.getString("ipAddress"),
                         type = jsonObject.getString("type"),
                         version = jsonObject.getString("version"),
-                        isOnline = jsonObject.getBoolean("isOnline")
+                        isOnline = false // При загрузке все устройства помечаются как оффлайн
                     )
                 )
             }
@@ -157,5 +147,10 @@ class MainViewModel(private val context: Context) : ViewModel() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        statusCheckJob?.cancel() // Отменяем проверку при уничтожении ViewModel
     }
 } 
