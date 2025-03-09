@@ -147,7 +147,7 @@ class NetworkScannerNew(private val context: Context) {
         devices.toList()
     }
 
-    private suspend fun checkDeviceAsync(ip: String) {
+    suspend fun checkDeviceAsync(ip: String) {
         var retryCount = 0
         while (retryCount < MAX_RETRIES) {
             try {
@@ -305,24 +305,14 @@ class NetworkScannerNew(private val context: Context) {
         }
     }
 
-    private fun isDeviceReachable(host: String): Boolean {
-        var socket: Socket? = null
-        return try {
-            Log.d(TAG, "Checking if device $host is reachable...")
-            socket = Socket()
-            socket.connect(InetSocketAddress(host, 80), CONNECT_TIMEOUT)
-            Log.d(TAG, "Device $host is reachable")
-            socket.close()
-            true
+    private suspend fun isDeviceReachable(ip: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val process = Runtime.getRuntime().exec("/system/bin/ping -c 1 -W 1 $ip")
+            val exitValue = process.waitFor()
+            exitValue == 0
         } catch (e: Exception) {
-            Log.d(TAG, "Device $host is not reachable: ${e.message}")
+            Log.e(TAG, "Error pinging $ip: ${e.message}")
             false
-        } finally {
-            try {
-                socket?.close()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error closing socket for $host: ${e.message}")
-            }
         }
     }
 
@@ -515,5 +505,9 @@ class NetworkScannerNew(private val context: Context) {
             Log.e(TAG, "Error checking device at $ipAddress: ${e.message}")
         }
         return@withContext null
+    }
+
+    fun getDevices(): List<Device> {
+        return devices.toList()
     }
 } 

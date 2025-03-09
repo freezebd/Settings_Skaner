@@ -11,12 +11,22 @@ android {
         applicationId = "com.example.settingd"
         minSdk = 29
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.2.1"
+        versionCode = 5
+        versionName = "1.2.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+        setProperty("archivesBaseName", "Settings_d-$versionName")
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("keystore/release.keystore.jks")
+            storePassword = "settings_d"
+            keyAlias = "settings_d"
+            keyPassword = "settings_d"
         }
     }
 
@@ -27,6 +37,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {

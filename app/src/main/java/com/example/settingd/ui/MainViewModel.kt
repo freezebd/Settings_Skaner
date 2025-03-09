@@ -81,11 +81,20 @@ class MainViewModel(private val context: Context) : ViewModel() {
             networkScanner.scanNetwork { progress ->
                 _scanProgress.value = progress
             }.also { newDevices ->
-                // Сначала сохраняем найденные устройства
-                val foundDevices = newDevices.map { it.copy(isOnline = true) }
+                // Создаем карту существующих устройств по MAC-адресу
+                val existingDevicesMap = _devices.value.associateBy { it.mac }
                 
-                // Обновляем список устройств
-                _devices.value = foundDevices.sortedWith(
+                // Обновляем статус существующих устройств и добавляем новые
+                val updatedDevices = (newDevices + _devices.value)
+                    .groupBy { it.mac }
+                    .map { (_, devices) ->
+                        // Если устройство найдено в новом сканировании, используем его (оно будет онлайн)
+                        // иначе используем существующее устройство с статусом оффлайн
+                        devices.find { it.isOnline } ?: devices.first().copy(isOnline = false)
+                    }
+                
+                // Сортируем устройства
+                _devices.value = updatedDevices.sortedWith(
                     compareBy<NetworkScannerNew.Device> { !it.isOnline }
                         .thenBy { it.name.lowercase() }
                 )
@@ -199,6 +208,15 @@ class MainViewModel(private val context: Context) : ViewModel() {
                 _isCheckingIp.value = false
                 hideIpInputDialog()
             }
+        }
+    }
+
+    fun getAppVersion(): String {
+        return try {
+            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            packageInfo.versionName
+        } catch (e: Exception) {
+            "1.0.0"
         }
     }
 } 

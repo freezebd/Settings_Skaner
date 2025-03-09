@@ -15,7 +15,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.example.settingd.data.NetworkScannerNew.Device
+import com.example.settingd.data.Device
+import com.example.settingd.data.MainViewModel
 import androidx.compose.material.DismissDirection
 import androidx.compose.material.DismissValue
 import androidx.compose.material.SwipeToDismiss
@@ -155,6 +156,15 @@ fun MainScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                 }
             }
+
+            Text(
+                text = "Freeze - ${viewModel.getAppVersion()}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+            )
 
             if (showIpDialog) {
                 IpInputDialog(
